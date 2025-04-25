@@ -20,6 +20,8 @@ build_package() {
   echo "Building package in $full_path..."
 
   cd "$pkg_dir" || return
+  export CC=clang
+  export CXX=clang++
 
   if makepkg --syncdeps --noconfirm --needed --skippgpcheck &> build.log; then
     echo "✅ SUCCESS: $full_path" >> "$BUILD_LOG"
@@ -92,7 +94,7 @@ process_packages() {
 }
 
 # Example run
-#process_packages "core" "$HOME/arch_packages/core/clone_urls.txt"
+process_packages "core" "$HOME/arch_packages/core/clone_urls.txt"
 process_packages "extra" "$HOME/arch_packages/extra/clone_urls.txt"
 
 # Summary
