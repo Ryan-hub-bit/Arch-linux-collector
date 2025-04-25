@@ -92,8 +92,8 @@ process_packages() {
 }
 
 # Example run
-#process_packages "core" "/home/user0/arch_packages/core/clone_urls.txt"
-process_packages "extra" "/home/user0/arch_packages/extra/clone_urls.txt"
+#process_packages "core" "$HOME/arch_packages/core/clone_urls.txt"
+process_packages "extra" "$HOME/arch_packages/extra/clone_urls.txt"
 
 # Summary
 echo "✅ All packages processed."

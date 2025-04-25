@@ -1,7 +1,8 @@
 #!/bin/bash
 # Create output directories
-mkdir -p arch_packages/core
-mkdir -p arch_packages/extra
+base_folder="$HOME"
+mkdir -p "$base_folder/arch_packages/core"
+mkdir -p "$base_folder/arch_packages/extra"
 
 # Function to fetch all packages with pagination and remove duplicates
 fetch_all_packages() {
@@ -29,7 +30,7 @@ fetch_all_packages() {
     echo "Added $this_page_count packages (total so far: $total_count)"
     
     # If we got fewer than the typical page size, we've likely reached the end
-    if [ "$this_page_count" -lt 15 ]; then
+    if [ "$this_page_count" -lt 250 ]; then
       has_more=false
       echo "Reached end of results (less than full page returned)"
     fi
@@ -76,49 +77,27 @@ remove_duplicate_urls() {
 }
 
 # Fetch all packages with pagination
-fetch_all_packages "Core" "arch_packages/core/packages.txt"
-fetch_all_packages "Extra" "arch_packages/extra/packages.txt"
+fetch_all_packages "Core" "$HOME/arch_packages/core/packages.txt"
+fetch_all_packages "Extra" "$HOME/arch_packages/extra/packages.txt"
 
 # Generate clone URLs for core (with no duplicates)
 echo "Generating clone URLs for Core repository..."
-echo "" >> arch_packages/core/clone_urls.txt
+echo "" >> $HOME/arch_packages/core/clone_urls.txt
 while IFS=, read -r pkgname pkgbase; do
-  echo "https://gitlab.archlinux.org/archlinux/packaging/packages/${pkgbase}.git" >> arch_packages/core/clone_urls.txt
-done < arch_packages/core/packages.txt
+  echo "https://gitlab.archlinux.org/archlinux/packaging/packages/${pkgbase}.git" >> $HOME/arch_packages/core/clone_urls.txt
+done < $HOME/arch_packages/core/packages.txt
 
 # Generate clone URLs for extra (with no duplicates)
 echo "Generating clone URLs for Extra repository..."
-echo "" >> arch_packages/extra/clone_urls.txt
+echo "" >> $HOME/arch_packages/extra/clone_urls.txt
 while IFS=, read -r pkgname pkgbase; do
-  echo "https://gitlab.archlinux.org/archlinux/packaging/packages/${pkgbase}.git" >> arch_packages/extra/clone_urls.txt
-done < arch_packages/extra/packages.txt
+  echo "https://gitlab.archlinux.org/archlinux/packaging/packages/${pkgbase}.git" >> $HOME/arch_packages/extra/clone_urls.txt
+done < $HOME/arch_packages/extra/packages.txt
 
 # Remove duplicate URLs from clone_urls.txt files
 echo "Removing duplicate URLs from clone files..."
-remove_duplicate_urls "arch_packages/core/clone_urls.txt"
-remove_duplicate_urls "arch_packages/extra/clone_urls.txt"
-
-# Create a script to clone all packages
-cat > arch_packages/clone_all.sh << 'EOF'
-#!/bin/bash
-# Script to clone all Arch Linux core and extra packages
-# This will create a directory structure organized by repository
-
-# Clone core packages
-mkdir -p core_packages
-cd core_packages
-xargs -n1 git clone < ../arch_packages/core/clone_urls.txt
-cd ..
-
-# Clone extra packages
-mkdir -p extra_packages
-cd extra_packages
-xargs -n1 git clone < ../arch_packages/extra/clone_urls.txt
-cd ..
-
-echo "All repositories have been cloned!"
-EOF
-chmod +x arch_packages/clone_all.sh
+remove_duplicate_urls "$HOME/arch_packages/core/clone_urls.txt"
+remove_duplicate_urls "$HOME/arch_packages/extra/clone_urls.txt"
 
 echo "Script completed. All unique package information has been retrieved."
 echo "Duplicate URLs have been removed from clone files."
