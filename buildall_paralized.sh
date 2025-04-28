@@ -11,22 +11,30 @@ mkdir -p "$ELF_OUTPUT_DIR"
 > "$ELF_MAP"
 touch "$PROGRESS_LOG"
 
-# Track how many packages we built
-PACKAGE_COUNTER=0
-# How many packages before clearing pacman cache
-CLEAN_THRESHOLD=200
-
 # GitLab access info
 GITLAB_USERNAME=""
 GITLAB_TOKEN=""
 
+# Parallel settings
+MAX_JOBS=8
+
+# Track built packages
+PACKAGE_COUNTER=0
+CLEAN_THRESHOLD=200
+
 # ─── Functions ────────────────────────────────────────────── #
+
+# Function to wait until running background jobs < MAX_JOBS
+wait_for_jobs() {
+  while (( $(jobs -r | wc -l) >= MAX_JOBS )); do
+    sleep 1
+  done
+}
 
 # Function to clean pacman cache safely
 clean_pacman_cache() {
   echo "🧹 Cleaning pacman cache (keeping latest 3 versions)..."
   
-  # Check if paccache exists
   if ! command -v paccache &>/dev/null; then
     echo "🔧 Installing pacman-contrib (provides paccache)..."
     sudo pacman -Sy --noconfirm pacman-contrib
@@ -35,7 +43,27 @@ clean_pacman_cache() {
   sudo paccache -r
 }
 
-# Function to build a package, log results, and extract ELF files
+# Function to clone a package repo
+clone_package() {
+  local url="$1"
+  local section_dir="$2"
+
+  url="${url/https:\/\//https:\/\/$GITLAB_USERNAME:$GITLAB_TOKEN@}"
+  local pkg_name
+  pkg_name=$(basename "$url" .git)
+
+  echo "🌐 Cloning $pkg_name..."
+
+  if git clone "$url" "$section_dir/$pkg_name" &>/dev/null; then
+    echo "✅ CLONE SUCCESS: $pkg_name" | tee -a "$BUILD_LOG"
+    echo "$url" >> "$PROGRESS_LOG"
+  else
+    echo "❌ CLONE FAILED: $pkg_name ($url)" | tee -a "$BUILD_LOG"
+    echo "$url" >> "$PROGRESS_LOG"
+  fi
+}
+
+# Function to build a package
 build_package() {
   local pkg_dir=$1
   local full_path
@@ -48,7 +76,7 @@ build_package() {
   export CXX=/home/kun/llvm-project/build/bin/clang++
 
   if makepkg --syncdeps --noconfirm --needed --skippgpcheck &> build.log; then
-    echo "✅ SUCCESS: $full_path" >> "$BUILD_LOG"
+    echo "✅ BUILD SUCCESS: $full_path" | tee -a "$BUILD_LOG"
     cd - > /dev/null
 
     # Copy usable ELF files (flattened), record mapping
@@ -73,64 +101,58 @@ build_package() {
       fi
     done
 
-    # Cleanup the built source
     echo "🧹 Cleaning up $full_path"
     chmod -R u+w "$full_path" 2>/dev/null || true
     rm -rf "$full_path"
 
-    # Increment counter
     ((PACKAGE_COUNTER++))
-
-    # If counter reaches threshold, clean pacman cache
     if (( PACKAGE_COUNTER >= CLEAN_THRESHOLD )); then
       clean_pacman_cache
-      PACKAGE_COUNTER=0  # reset counter after cleaning
+      PACKAGE_COUNTER=0
     fi
-
   else
-    echo "❌ FAILED: $full_path" >> "$BUILD_LOG"
+    echo "❌ BUILD FAILED: $full_path" | tee -a "$BUILD_LOG"
     cd - > /dev/null
   fi
 }
 
-# Function to process package list from a section
+# Process all packages for one section
 process_packages() {
   local section=$1
   local list_file=$2
 
   echo "📦 Processing $section packages..."
-  mkdir -p "${section}_packages"
-  cd "${section}_packages" || exit
+  local section_dir="${section}_packages"
+  mkdir -p "$section_dir"
+  cd "$section_dir" || exit
 
+  # ─── Clone Phase ───
+  echo "🌐 Cloning all packages for $section..."
   while read -r url; do
     [[ "$url" =~ ^#.*$ || -z "$url" ]] && continue
 
-    # Skip already processed URLs
     if grep -Fxq "$url" "$PROGRESS_LOG"; then
       echo "⏭️  Already processed: $url"
       continue
     fi
 
-    # Insert username and token into GitLab URL
-    if [[ "$url" == https://gitlab.archlinux.org/* ]]; then
-      url="${url/https:\/\//https:\/\/$GITLAB_USERNAME:$GITLAB_TOKEN@}"
-    fi
+    wait_for_jobs
+    clone_package "$url" "$PWD" &
 
-    pkg_name=$(basename "$url" .git)
-    echo "🌐 Cloning $pkg_name..."
-    if git clone "$url" &>/dev/null; then
-      if [ -d "$pkg_name" ]; then
-        build_package "$pkg_name"
-        echo "$url" >> "$PROGRESS_LOG"
-      else
-        echo "❌ FAILED TO CLONE (no dir): $pkg_name ($url)" >> "$BUILD_LOG"
-        echo "$url" >> "$PROGRESS_LOG"
-      fi
-    else
-      echo "❌ FAILED TO CLONE (git error): $pkg_name ($url)" >> "$BUILD_LOG"
-      echo "$url" >> "$PROGRESS_LOG"
-    fi
   done < "$list_file"
+
+  wait
+  echo "✅ Cloning done for $section!"
+
+  # ─── Build Phase ───
+  echo "⚙️  Building all packages for $section..."
+  for pkg_dir in */; do
+    wait_for_jobs
+    build_package "$pkg_dir" &
+  done
+
+  wait
+  echo "✅ Building done for $section!"
 
   cd ..
 }
@@ -140,7 +162,7 @@ process_packages() {
 process_packages "core" "$HOME/arch_packages/core/clone_urls.txt"
 process_packages "extra" "$HOME/arch_packages/extra/clone_urls.txt"
 
-# Final cleaning after everything
+# Final cache clean
 clean_pacman_cache
 
 # ─── Success Rate Summary ────────────────────────────────── #
@@ -148,19 +170,33 @@ clean_pacman_cache
 echo ""
 echo "📈 Generating success rate report..."
 
-success_count=$(grep -c "^✅ SUCCESS:" "$BUILD_LOG" || echo 0)
-fail_count=$(grep -c "^❌ FAILED" "$BUILD_LOG" || echo 0)
-total=$((success_count + fail_count))
+clone_success=$(grep -c "^✅ CLONE SUCCESS:" "$BUILD_LOG" || echo 0)
+clone_failed=$(grep -c "^❌ CLONE FAILED:" "$BUILD_LOG" || echo 0)
+build_success=$(grep -c "^✅ BUILD SUCCESS:" "$BUILD_LOG" || echo 0)
+build_failed=$(grep -c "^❌ BUILD FAILED:" "$BUILD_LOG" || echo 0)
 
-if (( total > 0 )); then
-  success_rate=$(awk "BEGIN {printf \"%.2f\", ($success_count/$total)*100}")
+echo "🔹 Clone success: $clone_success"
+echo "🔹 Clone failed:  $clone_failed"
+echo "🔸 Build success: $build_success"
+echo "🔸 Build failed:  $build_failed"
+
+total_clone=$((clone_success + clone_failed))
+total_build=$((build_success + build_failed))
+
+if (( total_clone > 0 )); then
+  clone_rate=$(awk "BEGIN {printf \"%.2f\", ($clone_success/$total_clone)*100}")
 else
-  success_rate=0
+  clone_rate=0
 fi
 
-echo "✅ Built packages: $success_count"
-echo "❌ Failed packages: $fail_count"
-echo "📊 Success rate: ${success_rate}%"
+if (( total_build > 0 )); then
+  build_rate=$(awk "BEGIN {printf \"%.2f\", ($build_success/$total_build)*100}")
+else
+  build_rate=0
+fi
+
+echo "📊 Clone success rate: ${clone_rate}%"
+echo "📊 Build success rate: ${build_rate}%"
 echo ""
 echo "📝 Build log saved to: $BUILD_LOG"
 echo "📜 ELF binary map saved to: $ELF_MAP"
